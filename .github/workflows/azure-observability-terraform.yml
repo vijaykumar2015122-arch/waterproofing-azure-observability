@@ -1,0 +1,110 @@
+
+name: Azure Observability Terraform Deployment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: azure-observability-terraform
+  cancel-in-progress: false
+
+env:
+  ARM_SUBSCRIPTION_ID: fdbedd27-0ed5-40e0-bbff-635777749aac
+  TF_IN_AUTOMATION: true
+
+jobs:
+  validate:
+    name: Terraform Validate
+    runs-on: [self-hosted, Linux, X64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Azure CLI authentication
+        run: |
+          az account show --query "{subscription:name,state:state}" -o table
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: Terraform formatting
+        run: terraform fmt -check -recursive
+
+      - name: Bootstrap validation
+        run: |
+          terraform -chdir=bootstrap init -backend=false
+          terraform -chdir=bootstrap validate
+
+      - name: Infrastructure validation
+        run: |
+          terraform -chdir=infrastructure init -backend=false
+          terraform -chdir=infrastructure validate
+
+  bootstrap-plan:
+    name: Bootstrap Terraform Plan
+    needs: validate
+    runs-on: [self-hosted, Linux, X64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize Terraform
+        run: terraform -chdir=bootstrap init -backend=false
+
+      - name: Generate Terraform plan
+        run: |
+          terraform -chdir=bootstrap plan \
+            -var="storage_account_name=stwpobsstate26v1" \
+            -out=bootstrap.tfplan
+
+      - name: Publish Terraform plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-terraform-plan
+          path: bootstrap/bootstrap.tfplan
+          retention-days: 1
+
+  bootstrap-apply:
+    name: Bootstrap Terraform Apply
+    needs: bootstrap-plan
+    runs-on: [self-hosted, Linux, X64]
+    environment: azure-bootstrap-approval
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Initialize Terraform
+        run: terraform -chdir=bootstrap init -backend=false
+
+      - name: Download reviewed plan
+        uses: actions/download-artifact@v4
+        with:
+          name: bootstrap-terraform-plan
+          path: bootstrap
+
+      - name: Apply approved Terraform plan
+        run: terraform -chdir=bootstrap apply -auto-approve bootstrap.tfplan
+
+      - name: Verify bootstrap resources
+        run: |
+          az group show \
+            --name rg-waterproofing-tfstate \
+            --query "{name:name,location:location}" \
+            -o table
+
+          az storage account show \
+            --name stwpobsstate26v1 \
+            --resource-group rg-waterproofing-tfstate \
+            --query "{name:name,location:location,sku:sku.name}" \
+            -o table
+
+          az storage container show \
+            --name tfstate \
+            --account-name stwpobsstate26v1 \
+            --auth-mode login \
+            --query "{name:name}" \
+            -o table
