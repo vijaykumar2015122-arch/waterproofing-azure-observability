@@ -1,0 +1,58 @@
+#cloud-config
+
+package_update: true
+package_upgrade: false
+
+packages:
+  - curl
+  - ca-certificates
+  - open-iscsi
+  - nfs-common
+
+runcmd:
+  - systemctl enable iscsid
+  - systemctl start iscsid
+
+  - |
+    for i in $(seq 1 60); do
+      if [ -b /dev/disk/azure/scsi1/lun0 ]; then
+        break
+      fi
+      sleep 5
+    done
+
+    test -b /dev/disk/azure/scsi1/lun0 || exit 1
+
+  - |
+    DISK="/dev/disk/azure/scsi1/lun0"
+
+    if ! blkid "$DISK"; then
+      mkfs.ext4 -F "$DISK"
+    fi
+
+  - |
+    DISK="/dev/disk/azure/scsi1/lun0"
+    UUID=$(blkid -s UUID -o value "$DISK")
+
+    mkdir -p /mnt/observability
+
+    grep -q "$UUID" /etc/fstab || \
+      echo "UUID=$UUID /mnt/observability ext4 defaults,nofail 0 2" >> /etc/fstab
+
+    mount /mnt/observability
+
+  - mkdir -p /mnt/observability/k3s
+
+  - |
+    curl -sfL https://get.k3s.io -o /tmp/install-k3s.sh
+
+    INSTALL_K3S_EXEC="server --data-dir /mnt/observability/k3s" \
+      sh /tmp/install-k3s.sh
+
+  - systemctl enable k3s
+  - systemctl start k3s
+
+  - mkdir -p /home/vijayadmin/.kube
+  - cp /etc/rancher/k3s/k3s.yaml /home/vijayadmin/.kube/config
+  - chown -R vijayadmin:vijayadmin /home/vijayadmin/.kube
+  - chmod 600 /home/vijayadmin/.kube/config

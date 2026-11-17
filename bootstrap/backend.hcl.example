@@ -1,0 +1,6 @@
+resource_group_name  = "rg-waterproofing-tfstate"
+storage_account_name = "stwpobsstate26v1"
+container_name       = "tfstate"
+key                  = "bootstrap.tfstate"
+use_cli              = true
+use_azuread_auth     = true

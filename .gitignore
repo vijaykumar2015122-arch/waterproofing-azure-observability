@@ -1,0 +1,11 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+/infrastructure/terraform.tfvars
+/bootstrap/terraform.tfvars
+
+# Local backups and audit files
+*.backup
+*.backup.*
+repository-audit.txt
