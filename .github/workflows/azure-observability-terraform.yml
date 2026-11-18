@@ -99,6 +99,7 @@ jobs:
               -backend-config=backend.hcl
           elif [[ "$RG_EXISTS" == "false" ]]; then
             echo "Fresh Bootstrap deployment: using local state."
+            mv bootstrap/backend.tf bootstrap/backend.tf.remote
             terraform -chdir=bootstrap init \
               -backend=false \
               -input=false
@@ -177,6 +178,7 @@ jobs:
               -backend-config=backend.hcl
           elif [[ "$RG_EXISTS" == "false" ]]; then
             echo "Fresh Bootstrap deployment: using local state."
+            mv bootstrap/backend.tf bootstrap/backend.tf.remote
             terraform -chdir=bootstrap init \
               -backend=false \
               -input=false
@@ -198,6 +200,13 @@ jobs:
             -input=false \
             -auto-approve \
             bootstrap.tfplan
+
+      - name: Restore Azure backend configuration
+        run: |
+          if [[ -f bootstrap/backend.tf.remote ]]; then
+            mv bootstrap/backend.tf.remote bootstrap/backend.tf
+            echo "Azure backend configuration restored."
+          fi
 
       - name: Configure Blob data access
         shell: bash
