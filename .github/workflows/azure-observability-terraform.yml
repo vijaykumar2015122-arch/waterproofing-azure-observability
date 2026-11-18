@@ -1,4 +1,3 @@
-
 name: Azure Observability Terraform Deployment
 
 on:
@@ -16,6 +15,7 @@ env:
   TF_IN_AUTOMATION: true
 
 jobs:
+
   validate:
     name: Terraform Validate
     runs-on: [self-hosted, Linux, X64]
@@ -26,20 +26,22 @@ jobs:
 
       - name: Verify Azure CLI authentication
         run: |
-          az account show --query "{subscription:name,state:state}" -o table
           az account set --subscription "$ARM_SUBSCRIPTION_ID"
+          az account show \
+            --query "{subscription:name,state:state}" \
+            -o table
 
       - name: Terraform formatting
         run: terraform fmt -check -recursive
 
       - name: Bootstrap validation
         run: |
-          terraform -chdir=bootstrap init -backend=false
+          terraform -chdir=bootstrap init -backend=false -input=false
           terraform -chdir=bootstrap validate
 
       - name: Infrastructure validation
         run: |
-          terraform -chdir=infrastructure init -backend=false
+          terraform -chdir=infrastructure init -backend=false -input=false
           terraform -chdir=infrastructure validate
 
   bootstrap-plan:
@@ -51,16 +53,68 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Initialize Terraform
-        run: terraform -chdir=bootstrap init -backend=false
+      - name: Configure Bootstrap backend
+        run: |
+          cat > bootstrap/backend.hcl <<EOF
+          resource_group_name  = "rg-waterproofing-tfstate"
+          storage_account_name = "stwpobsstate26v1"
+          container_name       = "tfstate"
+          key                  = "bootstrap.tfstate"
+          use_azuread_auth     = true
+          EOF
 
-      - name: Generate Terraform plan
+      - name: Initialize Bootstrap state
+        shell: bash
+        run: |
+          RG_EXISTS=$(az group exists \
+            --name rg-waterproofing-tfstate)
+
+          STORAGE_EXISTS=false
+          if [[ "$RG_EXISTS" == "true" ]]; then
+            if az storage account show \
+              --name stwpobsstate26v1 \
+              --resource-group rg-waterproofing-tfstate \
+              >/dev/null 2>&1; then
+              STORAGE_EXISTS=true
+            fi
+          fi
+
+          if [[ "$RG_EXISTS" == "true" && "$STORAGE_EXISTS" == "true" ]]; then
+            BLOB_EXISTS=$(az storage blob exists \
+              --account-name stwpobsstate26v1 \
+              --container-name tfstate \
+              --name bootstrap.tfstate \
+              --auth-mode login \
+              --query exists -o tsv)
+
+            if [[ "$BLOB_EXISTS" != "true" ]]; then
+              echo "ERROR: Bootstrap resources exist but remote state is missing."
+              echo "Stop deployment and recover/import the existing resources."
+              exit 1
+            fi
+
+            echo "Existing remote Bootstrap state found."
+            terraform -chdir=bootstrap init \
+              -reconfigure \
+              -backend-config=backend.hcl
+          elif [[ "$RG_EXISTS" == "false" ]]; then
+            echo "Fresh Bootstrap deployment: using local state."
+            terraform -chdir=bootstrap init \
+              -backend=false \
+              -input=false
+          else
+            echo "ERROR: Bootstrap resource group exists but storage account is missing."
+            echo "Stop deployment and inspect the partial Bootstrap deployment."
+            exit 1
+          fi
+
+      - name: Generate Bootstrap plan
         run: |
           terraform -chdir=bootstrap plan \
             -var="storage_account_name=stwpobsstate26v1" \
             -out=bootstrap.tfplan
 
-      - name: Publish Terraform plan
+      - name: Publish Bootstrap plan
         uses: actions/upload-artifact@v4
         with:
           name: bootstrap-terraform-plan
@@ -68,7 +122,7 @@ jobs:
           retention-days: 1
 
   bootstrap-apply:
-    name: Bootstrap Terraform Apply
+    name: Bootstrap Apply and Remote State
     needs: bootstrap-plan
     runs-on: [self-hosted, Linux, X64]
     environment: azure-bootstrap-approval
@@ -77,34 +131,271 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Initialize Terraform
-        run: terraform -chdir=bootstrap init -backend=false
+      - name: Configure Bootstrap backend
+        run: |
+          cat > bootstrap/backend.hcl <<EOF
+          resource_group_name  = "rg-waterproofing-tfstate"
+          storage_account_name = "stwpobsstate26v1"
+          container_name       = "tfstate"
+          key                  = "bootstrap.tfstate"
+          use_azuread_auth     = true
+          EOF
 
-      - name: Download reviewed plan
+      - name: Initialize Bootstrap state
+        shell: bash
+        run: |
+          RG_EXISTS=$(az group exists \
+            --name rg-waterproofing-tfstate)
+
+          STORAGE_EXISTS=false
+          if [[ "$RG_EXISTS" == "true" ]]; then
+            if az storage account show \
+              --name stwpobsstate26v1 \
+              --resource-group rg-waterproofing-tfstate \
+              >/dev/null 2>&1; then
+              STORAGE_EXISTS=true
+            fi
+          fi
+
+          if [[ "$RG_EXISTS" == "true" && "$STORAGE_EXISTS" == "true" ]]; then
+            BLOB_EXISTS=$(az storage blob exists \
+              --account-name stwpobsstate26v1 \
+              --container-name tfstate \
+              --name bootstrap.tfstate \
+              --auth-mode login \
+              --query exists -o tsv)
+
+            if [[ "$BLOB_EXISTS" != "true" ]]; then
+              echo "ERROR: Bootstrap resources exist but remote state is missing."
+              echo "Stop deployment and recover/import the existing resources."
+              exit 1
+            fi
+
+            echo "Existing remote Bootstrap state found."
+            terraform -chdir=bootstrap init \
+              -reconfigure \
+              -backend-config=backend.hcl
+          elif [[ "$RG_EXISTS" == "false" ]]; then
+            echo "Fresh Bootstrap deployment: using local state."
+            terraform -chdir=bootstrap init \
+              -backend=false \
+              -input=false
+          else
+            echo "ERROR: Bootstrap resource group exists but storage account is missing."
+            echo "Stop deployment and inspect the partial Bootstrap deployment."
+            exit 1
+          fi
+
+      - name: Download Bootstrap plan
         uses: actions/download-artifact@v4
         with:
           name: bootstrap-terraform-plan
           path: bootstrap
 
-      - name: Apply approved Terraform plan
-        run: terraform -chdir=bootstrap apply -auto-approve bootstrap.tfplan
+      - name: Apply reviewed Bootstrap plan
+        run: |
+          terraform -chdir=bootstrap apply \
+            -input=false \
+            -auto-approve \
+            bootstrap.tfplan
 
-      - name: Verify bootstrap resources
+      - name: Configure Blob data access
+        shell: bash
+        run: |
+          STORAGE_ID=$(az storage account show \
+            --name stwpobsstate26v1 \
+            --resource-group rg-waterproofing-tfstate \
+            --query id -o tsv)
+
+          USER_ID=$(az ad signed-in-user show --query id -o tsv)
+
+          ROLE_EXISTS=$(az role assignment list \
+            --assignee "$USER_ID" \
+            --scope "$STORAGE_ID" \
+            --query "[?roleDefinitionName=='Storage Blob Data Contributor'] | length(@)" \
+            -o tsv)
+
+          if [[ "$ROLE_EXISTS" == "0" ]]; then
+            az role assignment create \
+              --assignee-object-id "$USER_ID" \
+              --assignee-principal-type User \
+              --role "Storage Blob Data Contributor" \
+              --scope "$STORAGE_ID"
+          fi
+
+      - name: Wait for Azure Blob data access
+        shell: bash
+        run: |
+          echo "Waiting for Azure Blob RBAC permissions to propagate."
+
+          for attempt in $(seq 1 12); do
+            if az storage container show \
+              --account-name stwpobsstate26v1 \
+              --name tfstate \
+              --auth-mode login \
+              >/dev/null 2>&1; then
+              echo "Azure Blob data access is available."
+              exit 0
+            fi
+
+            echo "Attempt $attempt/12: Blob access not ready. Waiting 10 seconds."
+            sleep 10
+          done
+
+          echo "ERROR: Azure Blob data access is still unavailable."
+          exit 1
+
+      - name: Migrate initial state to Azure Blob
+        shell: bash
+        run: |
+          if ! az storage blob exists \
+            --account-name stwpobsstate26v1 \
+            --container-name tfstate \
+            --name bootstrap.tfstate \
+            --auth-mode login \
+            --query exists -o tsv | grep -qx true; then
+
+            echo "Migrating initial local state to Azure Blob."
+            terraform -chdir=bootstrap init \
+              -migrate-state \
+              -force-copy \
+              -backend-config=backend.hcl
+          else
+            echo "Remote Bootstrap state already exists."
+          fi
+
+      - name: Verify Bootstrap resources and state
         run: |
           az group show \
             --name rg-waterproofing-tfstate \
-            --query "{name:name,location:location}" \
             -o table
 
           az storage account show \
             --name stwpobsstate26v1 \
             --resource-group rg-waterproofing-tfstate \
-            --query "{name:name,location:location,sku:sku.name}" \
             -o table
 
-          az storage container show \
-            --name tfstate \
+          az storage blob list \
             --account-name stwpobsstate26v1 \
+            --container-name tfstate \
             --auth-mode login \
-            --query "{name:name}" \
+            -o table
+
+  infrastructure-plan:
+    name: Infrastructure Terraform Plan
+    needs: bootstrap-apply
+    runs-on: [self-hosted, Linux, X64]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure Infrastructure backend
+        run: |
+          cat > infrastructure/backend.hcl <<EOF
+          resource_group_name  = "rg-waterproofing-tfstate"
+          storage_account_name = "stwpobsstate26v1"
+          container_name       = "tfstate"
+          key                  = "observability.tfstate"
+          use_azuread_auth     = true
+          EOF
+
+      - name: Initialize Infrastructure remote state
+        run: |
+          terraform -chdir=infrastructure init \
+            -reconfigure \
+            -backend-config=backend.hcl
+
+      - name: Generate Infrastructure plan
+        run: |
+          terraform -chdir=infrastructure plan \
+            -input=false \
+            -out=observability.tfplan
+
+      - name: Check for destructive changes
+        run: |
+          terraform -chdir=infrastructure show -json observability.tfplan |
+          jq -e '
+            [
+              .resource_changes[]?
+              | select(.change.actions | index("delete"))
+            ] | length == 0
+          ' >/dev/null
+
+      - name: Publish Infrastructure plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: infrastructure-terraform-plan
+          path: infrastructure/observability.tfplan
+          retention-days: 1
+
+  infrastructure-apply:
+    name: Infrastructure Terraform Apply
+    needs: infrastructure-plan
+    runs-on: [self-hosted, Linux, X64]
+    environment: azure-infrastructure-approval
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure Infrastructure backend
+        run: |
+          cat > infrastructure/backend.hcl <<EOF
+          resource_group_name  = "rg-waterproofing-tfstate"
+          storage_account_name = "stwpobsstate26v1"
+          container_name       = "tfstate"
+          key                  = "observability.tfstate"
+          use_azuread_auth     = true
+          EOF
+
+      - name: Initialize Infrastructure remote state
+        run: |
+          terraform -chdir=infrastructure init \
+            -reconfigure \
+            -backend-config=backend.hcl
+
+      - name: Download Infrastructure plan
+        uses: actions/download-artifact@v4
+        with:
+          name: infrastructure-terraform-plan
+          path: infrastructure
+
+      - name: Apply reviewed Infrastructure plan
+        run: |
+          terraform -chdir=infrastructure apply \
+            -input=false \
+            -auto-approve \
+            observability.tfplan
+
+      - name: Verify deployed Azure resources
+        run: |
+          az group show \
+            --name rg-waterproofing-observability \
+            -o table
+
+          az resource list \
+            --resource-group rg-waterproofing-observability \
+            --query "[].{Name:name,Type:type,Location:location}" \
+            -o table
+
+          az vm list \
+            --resource-group rg-waterproofing-observability \
+            -o table
+
+          az network vnet list \
+            --resource-group rg-waterproofing-observability \
+            -o table
+
+          az postgres flexible-server list \
+            --resource-group rg-waterproofing-observability \
+            -o table
+
+      - name: Verify Terraform state blobs
+        run: |
+          az storage blob list \
+            --account-name stwpobsstate26v1 \
+            --container-name tfstate \
+            --auth-mode login \
+            --query "[].name" \
             -o table

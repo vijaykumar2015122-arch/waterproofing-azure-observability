@@ -9,3 +9,4 @@
 *.backup
 *.backup.*
 repository-audit.txt
+**/backend.hcl
