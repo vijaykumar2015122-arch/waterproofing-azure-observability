@@ -294,6 +294,10 @@ jobs:
     name: Infrastructure Terraform Plan
     needs: bootstrap-apply
     runs-on: [self-hosted, Linux, X64]
+    env:
+      TF_VAR_admin_source_ip: ${{ vars.TF_VAR_ADMIN_SOURCE_IP }}
+      TF_VAR_admin_ssh_public_key: ${{ vars.TF_VAR_ADMIN_SSH_PUBLIC_KEY }}
+      TF_VAR_postgres_admin_password: ${{ secrets.TF_VAR_POSTGRES_ADMIN_PASSWORD }}
 
     steps:
       - name: Checkout repository
@@ -342,6 +346,10 @@ jobs:
     name: Infrastructure Terraform Apply
     needs: infrastructure-plan
     runs-on: [self-hosted, Linux, X64]
+    env:
+      TF_VAR_admin_source_ip: ${{ vars.TF_VAR_ADMIN_SOURCE_IP }}
+      TF_VAR_admin_ssh_public_key: ${{ vars.TF_VAR_ADMIN_SSH_PUBLIC_KEY }}
+      TF_VAR_postgres_admin_password: ${{ secrets.TF_VAR_POSTGRES_ADMIN_PASSWORD }}
     environment: azure-infrastructure-approval
 
     steps:
